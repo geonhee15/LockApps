@@ -120,10 +120,15 @@ final class AppSettings {
     /// hand-launched copy finds the agent enabled but not running.
     func refreshAgentRegistration() {
         guard Self.persist, agent.status == .enabled else { return }
-        try? agent.unregister()
-        do { try agent.register() } catch { launchAtLoginError = error.localizedDescription }
-        refreshLaunchAtLogin()
-        NSLog("LockApps: re-registered the background agent")
+        // Register only once launchd has finished removing the old job, or the new one inherits its constraint.
+        agent.unregister { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                guard let self else { return }
+                do { try self.agent.register() } catch { self.launchAtLoginError = error.localizedDescription }
+                self.refreshLaunchAtLogin()
+                NSLog("LockApps: re-registered the background agent")
+            }
+        }
     }
 
     /// Earlier builds used a plain login item (SMAppService.mainApp); move it to the supervised agent.

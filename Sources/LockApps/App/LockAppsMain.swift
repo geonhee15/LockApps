@@ -35,7 +35,12 @@ enum AgentCLI {
         do {
             switch command {
             case "register": try agent.register()
-            case "unregister": try agent.unregister()
+            case "unregister":
+                let done = DispatchSemaphore(value: 0)
+                var failure: Error?
+                agent.unregister { error in failure = error; done.signal() }
+                if done.wait(timeout: .now() + 15) == .timedOut { print("agent unregister timed out"); exit(1) }
+                if let failure, (failure as NSError).code != kSMErrorJobNotFound { throw failure }
             case "status": break
             default:
                 print("usage: LockApps --agent status|register|unregister")

@@ -47,7 +47,10 @@ APP="build/$APP_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "build/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
-sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD_NUMBER/" Resources/Info.plist > "$APP/Contents/Info.plist"
+BUNDLE_ID=com.geonhee.lockapps
+[[ "$CONFIG" == "debug" ]] && BUNDLE_ID=com.geonhee.lockapps.dev   # keep the dev copy distinct for LaunchServices
+sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD_NUMBER/" -e "s/<string>com.geonhee.lockapps<\/string>/<string>$BUNDLE_ID<\/string>/" \
+  Resources/Info.plist > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 if [[ ! -f build/AppIcon.icns || Scripts/make-icon.swift -nt build/AppIcon.icns ]]; then
@@ -91,11 +94,29 @@ if [[ "$CONFIG" != "debug" ]]; then
   rm -rf "$INSTALL_APP"
   ditto --noextattr --noqtn "$APP" "$INSTALL_APP"
   codesign --verify "$INSTALL_APP" && echo "✔ installed $INSTALL_APP"
+  # Only the installed copy may answer to the bundle identifier: smd derives the agent's launch constraint from
+  # whatever LaunchServices resolves for it, and a stale build/ copy makes every spawn a constraint violation.
+  LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  "$LSREG" -u "$APP" >/dev/null 2>&1 || true
+  "$LSREG" -f "$INSTALL_APP" >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5; do
+    RESOLVED="$(osascript -e 'POSIX path of (path to application id "com.geonhee.lockapps")' 2>/dev/null | sed 's:/$::')"
+    [[ "$RESOLVED" == "$INSTALL_APP" ]] && break
+    sleep 1; "$LSREG" -f "$INSTALL_APP" >/dev/null 2>&1 || true
+  done
+  [[ "$RESOLVED" == "$INSTALL_APP" ]] || echo "⚠ LaunchServices resolves com.geonhee.lockapps to '$RESOLVED' — remove other copies of LockApps.app"
   # launchd pins the background agent to the signature it was registered with; a rebuilt bundle fails to spawn
   # (EX_CONFIG / Launch Constraint Violation) until it is registered again.
   if "$INSTALL_APP/Contents/MacOS/$APP_NAME" --agent status 2>/dev/null | grep -q enabled; then
     echo "▶ re-registering background agent for the new build"
+    # Registering while launchd is still tearing the old job down pins the new job to the old signature
+    # (spawn fails with EX_CONFIG), so wait until the job and its process are really gone.
     "$INSTALL_APP/Contents/MacOS/$APP_NAME" --agent unregister >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do
+      launchctl print "gui/$(id -u)/com.geonhee.lockapps.agent" >/dev/null 2>&1 || pgrep -x "$APP_NAME" >/dev/null 2>&1 || break
+      sleep 0.5
+    done
+    sleep 1
     "$INSTALL_APP/Contents/MacOS/$APP_NAME" --agent register || true
   fi
 fi
