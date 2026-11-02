@@ -89,7 +89,9 @@ Xcode 없이 Command Line Tools만 있으면 됩니다 (macOS 14+, Swift 5.9+).
 `build.sh` 는 `swiftc` 로 소스를 통째로 컴파일한 뒤 `.app` 번들을 조립하고 서명합니다. 키체인에 코드 서명 인증서가 있으면
 (`LOCKAPPS_SIGN_IDENTITY`, 기본값 `Omni Dev Signing`) 그걸로, 없으면 ad-hoc 서명합니다. 릴리즈 빌드는 **`~/Applications/LockApps.app`** 에
 설치하고(`LOCKAPPS_INSTALL_DIR` 로 변경) 백그라운드 에이전트는 그 사본을 가리킵니다. 첫 빌드는 SDK 모듈 캐시(`build/ModuleCache`)를 만드느라
-1~2분 걸리고, 그 다음부터는 수 초면 끝납니다. 아이콘(`AppIcon.icns`)은 `Scripts/make-icon.swift` 가 SF Symbol로 그려 냅니다.
+1~2분 걸리고, 그 다음부터는 수 초면 끝납니다.
+백그라운드 에이전트는 등록 당시의 코드 서명에 묶이므로, 다시 빌드해 설치하면 `build.sh` 가 에이전트를 자동으로 해제했다가 다시 등록합니다
+(직접 실행한 사본도 에이전트가 켜져 있는데 launchd 사본이 없으면 같은 재등록을 합니다). 아이콘(`AppIcon.icns`)은 `Scripts/make-icon.swift` 가 SF Symbol로 그려 냅니다.
 Command Line Tools에 오래된 `module.modulemap` 이 남아 있어 `redefinition of module 'SwiftBridging'` 이 나는 Mac은
 `Scripts/toolchain-fix` 의 VFS 오버레이로 자동 우회합니다.
 

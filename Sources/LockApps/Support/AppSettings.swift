@@ -115,6 +115,17 @@ final class AppSettings {
         refreshLaunchAtLogin()
     }
 
+    /// launchd pins the agent to the app's code signature at registration time; a rebuilt (re-signed) bundle then
+    /// fails to spawn with EX_CONFIG / "Launch Constraint Violation" until it is registered again. Called when a
+    /// hand-launched copy finds the agent enabled but not running.
+    func refreshAgentRegistration() {
+        guard Self.persist, agent.status == .enabled else { return }
+        try? agent.unregister()
+        do { try agent.register() } catch { launchAtLoginError = error.localizedDescription }
+        refreshLaunchAtLogin()
+        NSLog("LockApps: re-registered the background agent")
+    }
+
     /// Earlier builds used a plain login item (SMAppService.mainApp); move it to the supervised agent.
     func migrateLegacyLoginItem() {
         guard Self.persist, SMAppService.mainApp.status == .enabled else { return }

@@ -47,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             // Protection only survives quits/crashes with the agent registered; put it back if it went missing.
             if settings.protectionEnabled, !settings.launchAtLogin, !settings.launchAtLoginNeedsApproval {
                 settings.setLaunchAtLogin(true)
+            } else if settings.launchAtLogin, !isAgentInstance {
+                // We are a hand-launched copy although the agent is enabled, so launchd's copy is not running
+                // (typically a rebuilt bundle that no longer matches the registration). Register again; the fresh
+                // launchd copy takes over from us.
+                settings.refreshAgentRegistration()
             }
         }
         if settings.protectionEnabled, !isDebugRun || debugEngineAllowed { engine.start() }

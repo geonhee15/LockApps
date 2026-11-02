@@ -91,6 +91,13 @@ if [[ "$CONFIG" != "debug" ]]; then
   rm -rf "$INSTALL_APP"
   ditto --noextattr --noqtn "$APP" "$INSTALL_APP"
   codesign --verify "$INSTALL_APP" && echo "✔ installed $INSTALL_APP"
+  # launchd pins the background agent to the signature it was registered with; a rebuilt bundle fails to spawn
+  # (EX_CONFIG / Launch Constraint Violation) until it is registered again.
+  if "$INSTALL_APP/Contents/MacOS/$APP_NAME" --agent status 2>/dev/null | grep -q enabled; then
+    echo "▶ re-registering background agent for the new build"
+    "$INSTALL_APP/Contents/MacOS/$APP_NAME" --agent unregister >/dev/null 2>&1 || true
+    "$INSTALL_APP/Contents/MacOS/$APP_NAME" --agent register || true
+  fi
 fi
 
 if [[ $RUN -eq 1 ]]; then
