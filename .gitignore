@@ -1,0 +1,24 @@
+# Build output (build.sh) and SwiftPM
+build/
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode (the project is built with swiftc; generated projects are local only)
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# Toolchain workaround file generated per machine
+Scripts/toolchain-fix/overlay.yaml
+
+# macOS
+.DS_Store
+._*
+Icon?
+
+# Editors
+.vscode/
+.idea/
+*.swp
