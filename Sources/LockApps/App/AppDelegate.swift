@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let settings = AppSettings.shared
     let store = LockStore()
     let scanner = AppScanner()
@@ -12,13 +12,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var window: NSWindow?
     private var statusItem: NSStatusItem?
+    private var sigterm: DispatchSourceSignal?
     private let env = ProcessInfo.processInfo.environment
     private static let showWindowNote = Notification.Name("com.geonhee.lockapps.showWindow")
+    private static let handoffNote = Notification.Name("com.geonhee.lockapps.handoff")
+    private static let handoffWindowKey = "handoffShowWindow"
 
     /// Screenshot / sample-data runs: separate data dir, nothing persisted, engine never started.
     private var isDebugRun: Bool { env["LOCKAPPS_DATA_DIR"] != nil }
     /// Debug runs normally never enforce locks; LOCKAPPS_DEBUG_ENGINE=1 opts in for end-to-end tests.
     private var debugEngineAllowed: Bool { isDebugRun && env["LOCKAPPS_DEBUG_ENGINE"] == "1" }
+    /// Started by launchd through the embedded agent plist: stays in the menu bar unless a window was handed over.
+    private var isAgentInstance: Bool { settings.isAgentInstance }
 
     // MARK: Lifecycle
 
@@ -33,11 +38,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             openWindow: { [weak self] in self?.showWindow() }
         )
         setupStatusItem()
+        installSignalHandler()
         settings.onProtectionChanged = { [weak self] on in self?.applyProtection(on) }
         scanner.scan()
 
+        if !isDebugRun {
+            settings.migrateLegacyLoginItem()
+            // Protection only survives quits/crashes with the agent registered; put it back if it went missing.
+            if settings.protectionEnabled, !settings.launchAtLogin, !settings.launchAtLoginNeedsApproval {
+                settings.setLaunchAtLogin(true)
+            }
+        }
         if settings.protectionEnabled, !isDebugRun || debugEngineAllowed { engine.start() }
-        if !launchedAsLoginItem(notification) || isDebugRun { showWindow() }
+
+        let tookOverWindow = UserDefaults.standard.bool(forKey: Self.handoffWindowKey)
+        if tookOverWindow { UserDefaults.standard.removeObject(forKey: Self.handoffWindowKey) }
+        let background = (isAgentInstance || launchedAsLoginItem(notification)) && !tookOverWindow
+        if !background || isDebugRun { showWindow() }
         applyDebugFlags()
     }
 
@@ -49,27 +66,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !isDebugRun, settings.protectionEnabled, store.count > 0 else { return .terminateNow }
+        if isDebugRun || quitRequestedBySystem() { return .terminateNow }
+        guard settings.protectionEnabled, store.count > 0 else { return .terminateNow }
+        let supervised = settings.launchAtLogin
         let alert = NSAlert()
         alert.messageText = "LockApps를 종료할까요?"
-        alert.informativeText = "종료하면 잠근 앱 \(store.count)개에 비밀번호를 묻지 않습니다. 로그인 시 자동 실행이 켜져 있으면 다음 로그인 때 다시 보호합니다."
-        alert.addButton(withTitle: "종료")
+        alert.informativeText = supervised
+            ? "보호 중이라 종료해도 백그라운드에서 몇 초 안에 다시 실행됩니다. 창만 닫으면 Dock에서 사라지고 메뉴 막대에서 계속 지킵니다. 잠금을 완전히 멈추려면 보호를 끄세요."
+            : "종료하면 다시 실행할 때까지 잠근 앱 \(store.count)개에 비밀번호를 묻지 않습니다. 창만 닫으면 메뉴 막대에서 계속 지킵니다."
+        alert.addButton(withTitle: "창만 닫기")
+        alert.addButton(withTitle: supervised ? "보호 끄고 종료" : "종료 (보호 중단)")
         alert.addButton(withTitle: "취소")
         alert.alertStyle = .warning
         NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if window?.isVisible == true { window?.close() } else { NSApp.setActivationPolicy(.accessory) }
+            return .terminateCancel
+        case .alertSecondButtonReturn:
+            if supervised { settings.protectionEnabled = false }
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         engine.releaseAll()
     }
 
+    /// Logout / shutdown / restart quits carry a reason; never block those with a dialog.
+    private func quitRequestedBySystem() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent, event.eventID == 0x7175_6974 /* 'quit' */ else { return false }
+        return event.attributeDescriptor(forKeyword: 0x7768_793F /* 'why?' kAEQuitReason */) != nil
+    }
+
+    /// launchd (unregister, logout) and `kill` send SIGTERM; let held apps go before exiting. A non-zero exit while
+    /// protecting makes launchd (KeepAlive.SuccessfulExit = false) start a fresh copy.
+    private func installSignalHandler() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.engine.releaseAll()
+                exit(self?.settings.protectionEnabled == true ? 1 : 0)
+            }
+        }
+        source.resume()
+        sigterm = source
+    }
+
     // MARK: Window
 
     func showWindow() {
+        NSApp.setActivationPolicy(.regular)
         if window == nil { window = makeWindow() }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Closing the window turns LockApps back into a menu-bar-only app (no Dock icon) that keeps protecting.
+    func windowWillClose(_ notification: Notification) {
+        guard !isDebugRun else { return }
+        DispatchQueue.main.async { [weak self] in
+            if self?.window?.isVisible != true { NSApp.setActivationPolicy(.accessory) }
+        }
     }
 
     private func makeWindow() -> NSWindow {
@@ -91,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         w.isReleasedWhenClosed = false
         w.isOpaque = false
         w.backgroundColor = .clear
+        w.delegate = self
         let root = RootView(scanner: scanner, store: store, settings: settings, engine: engine, ui: ui)
         let hosting = NSHostingView(rootView: root)
         hosting.sizingOptions = []
@@ -136,6 +198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let status = NSMenuItem(title: settings.protectionEnabled ? "보호 중 · 잠근 앱 \(store.count)개" : "보호 꺼짐 · 잠근 앱 \(store.count)개", action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+        let background = NSMenuItem(title: settings.launchAtLogin ? "백그라운드 실행 · 켜짐 (종료돼도 다시 실행)" : "백그라운드 실행 · 꺼짐", action: nil, keyEquivalent: "")
+        background.isEnabled = false
+        menu.addItem(background)
         let toggle = NSMenuItem(title: settings.protectionEnabled ? "보호 끄기" : "보호 켜기 (적용)", action: #selector(menuToggleProtection), keyEquivalent: "")
         toggle.target = self
         toggle.isEnabled = settings.protectionEnabled || store.count > 0
@@ -156,19 +221,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // MARK: Single instance / login item
+    // MARK: Single instance / hand-off / login item
 
     private func enforceSingleInstance() {
         guard !isDebugRun, let bid = Bundle.main.bundleIdentifier else { return }
         let me = ProcessInfo.processInfo.processIdentifier
+        let center = DistributedNotificationCenter.default()
         if let other = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first(where: { $0.processIdentifier != me }) {
-            DistributedNotificationCenter.default().postNotificationName(Self.showWindowNote, object: nil, userInfo: nil, deliverImmediately: true)
-            other.activate()
-            exit(0)
+            if isAgentInstance {
+                // launchd started us while a hand-launched copy is running: ask it to step aside so the
+                // supervised copy is the one that owns protection (it is the one launchd will relaunch).
+                center.postNotificationName(Self.handoffNote, object: nil, userInfo: nil, deliverImmediately: true)
+                let deadline = Date().addingTimeInterval(8)
+                while !other.isTerminated, Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                }
+                if !other.isTerminated {
+                    NSLog("LockApps: pid \(other.processIdentifier) did not hand off; launchd copy exits")
+                    exit(0)
+                }
+                NSLog("LockApps: took over from pid \(other.processIdentifier)")
+            } else {
+                center.postNotificationName(Self.showWindowNote, object: nil, userInfo: nil, deliverImmediately: true)
+                other.activate()
+                exit(0)
+            }
         }
-        DistributedNotificationCenter.default().addObserver(forName: Self.showWindowNote, object: nil, queue: .main) { [weak self] _ in
+        center.addObserver(forName: Self.showWindowNote, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.showWindow() }
         }
+        center.addObserver(forName: Self.handoffNote, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handOff() }
+        }
+    }
+
+    /// The launchd-supervised copy is taking over: free held apps, remember whether the window was open, leave.
+    private func handOff() {
+        guard !isAgentInstance else { return }
+        UserDefaults.standard.set(window?.isVisible == true, forKey: Self.handoffWindowKey)
+        UserDefaults.standard.synchronize()
+        engine.releaseAll()
+        NSLog("LockApps: handing off to the launchd copy")
+        exit(0)
     }
 
     private func launchedAsLoginItem(_ note: Notification) -> Bool {
@@ -238,15 +332,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
-/// Shared "적용" / "끄기" behaviour for the bottom bar and the status-item menu.
+/// Shared "적용" / "끄기" behaviour for the bottom bar, the settings card and the status-item menu.
 @MainActor
 enum ProtectionActions {
     static func apply(settings: AppSettings, ui: UIState) {
         settings.protectionEnabled = true
         if !settings.launchAtLogin { settings.setLaunchAtLogin(true) }
-        ui.flash(settings.launchAtLogin
-                 ? "적용됐어요 · 로그인 시 자동 실행도 켜졌습니다"
-                 : "적용됐어요 · 이제 잠근 앱을 열면 비밀번호를 묻습니다")
+        if settings.launchAtLoginNeedsApproval {
+            ui.flash("적용됐어요 · 시스템 설정에서 LockApps 백그라운드 실행을 허용해 주세요")
+        } else if settings.launchAtLogin {
+            ui.flash("적용됐어요 · 창을 닫거나 종료돼도 백그라운드에서 계속 지킵니다")
+        } else {
+            ui.flash("적용됐어요 · 이제 잠근 앱을 열면 비밀번호를 묻습니다")
+        }
     }
 
     static func turnOff(settings: AppSettings, ui: UIState) {
@@ -260,5 +358,22 @@ enum ProtectionActions {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         settings.protectionEnabled = false
         ui.flash("보호를 껐어요 · 잠금 목록은 남아 있습니다")
+    }
+
+    /// Background-agent switch. Turning it off while launchd owns this process stops the process too, so ask first.
+    static func setBackgroundAgent(_ enabled: Bool, settings: AppSettings, ui: UIState) {
+        if !enabled, settings.isAgentInstance {
+            let alert = NSAlert()
+            alert.messageText = "백그라운드 실행을 끌까요?"
+            alert.informativeText = "이 LockApps는 launchd가 띄운 사본이라, 끄면 지금 바로 종료되고 다음에 직접 실행할 때까지 잠금이 동작하지 않습니다."
+            alert.addButton(withTitle: "끄고 종료")
+            alert.addButton(withTitle: "취소")
+            alert.alertStyle = .warning
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        settings.setLaunchAtLogin(enabled)
+        if enabled, settings.launchAtLoginNeedsApproval {
+            ui.flash("시스템 설정 › 로그인 항목에서 LockApps를 허용해 주세요")
+        }
     }
 }

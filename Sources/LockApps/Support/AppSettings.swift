@@ -42,6 +42,11 @@ final class AppSettings {
     private static let protectionKey = "protectionEnabled"
     private static let persist = ProcessInfo.processInfo.environment["LOCKAPPS_DATA_DIR"] == nil
 
+    /// Embedded launchd agent (Contents/Library/LaunchAgents): starts LockApps at login and relaunches it
+    /// when it is killed or crashes, so protection does not end with the process.
+    nonisolated static let agentPlistName = "com.geonhee.lockapps.agent.plist"
+    private var agent: SMAppService { SMAppService.agent(plistName: Self.agentPlistName) }
+
     var appearance: AppearanceMode {
         didSet {
             if Self.persist { UserDefaults.standard.set(appearance.rawValue, forKey: Self.appearanceKey) }
@@ -59,8 +64,14 @@ final class AppSettings {
 
     @ObservationIgnored var onProtectionChanged: ((Bool) -> Void)?
 
+    /// Background agent registered (login start + relaunch).
     private(set) var launchAtLogin: Bool = false
+    /// macOS wants the user to allow the background item in System Settings first.
+    private(set) var launchAtLoginNeedsApproval = false
     private(set) var launchAtLoginError: String?
+
+    /// True when this process was started by launchd through the agent plist.
+    var isAgentInstance: Bool { ProcessInfo.processInfo.environment["LOCKAPPS_AGENT"] == "1" }
 
     private init() {
         let env = ProcessInfo.processInfo.environment
@@ -83,22 +94,36 @@ final class AppSettings {
             launchAtLogin = forced == "1"
             return
         }
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        let status = agent.status
+        launchAtLogin = status == .enabled
+        launchAtLoginNeedsApproval = status == .requiresApproval
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
         guard Self.persist else { launchAtLogin = enabled; return }
         do {
             if enabled {
-                try SMAppService.mainApp.register()
+                if agent.status != .enabled { try agent.register() }
             } else {
-                try SMAppService.mainApp.unregister()
+                try agent.unregister()
             }
             launchAtLoginError = nil
         } catch {
             launchAtLoginError = error.localizedDescription
-            NSLog("LockApps: login item change failed: \(error)")
+            NSLog("LockApps: agent \(enabled ? "register" : "unregister") failed: \(error)")
         }
         refreshLaunchAtLogin()
+    }
+
+    /// Earlier builds used a plain login item (SMAppService.mainApp); move it to the supervised agent.
+    func migrateLegacyLoginItem() {
+        guard Self.persist, SMAppService.mainApp.status == .enabled else { return }
+        try? SMAppService.mainApp.unregister()
+        setLaunchAtLogin(true)
+        NSLog("LockApps: migrated login item to the launchd agent")
+    }
+
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 }

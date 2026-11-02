@@ -228,7 +228,7 @@ struct RootView: View {
     private var statusSubtitle: String {
         if let toast = ui.toast { return toast }
         if settings.protectionEnabled {
-            return engine.heldCount > 0 ? "비밀번호를 기다리는 앱 \(engine.heldCount)개" : "저장한 잠금은 바로 적용돼요 · 앱을 끄면 다시 잠깁니다"
+            return engine.heldCount > 0 ? "비밀번호를 기다리는 앱 \(engine.heldCount)개" : "저장한 잠금은 바로 적용돼요 · 창을 닫아도 메뉴 막대에서 계속 지킵니다"
         }
         return store.count == 0 ? "앱을 골라 비밀번호를 정한 뒤 적용을 누르세요" : "적용을 누르면 지금부터 비밀번호를 묻습니다"
     }

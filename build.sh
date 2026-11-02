@@ -56,6 +56,9 @@ if [[ ! -f build/AppIcon.icns || Scripts/make-icon.swift -nt build/AppIcon.icns 
   ./build/make-icon build/AppIcon.icns
 fi
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# Background agent definition for SMAppService (RunAtLoad + relaunch on crash/kill).
+mkdir -p "$APP/Contents/Library/LaunchAgents"
+cp Resources/com.geonhee.lockapps.agent.plist "$APP/Contents/Library/LaunchAgents/com.geonhee.lockapps.agent.plist"
 
 # Finder stamps com.apple.FinderInfo on launched bundles and codesign refuses to seal a bundle carrying it.
 xattr -cr "$APP" 2>/dev/null || true

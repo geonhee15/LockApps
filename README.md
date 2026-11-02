@@ -41,8 +41,10 @@ macOS 26에서는 진짜 Liquid Glass(`glassEffect`) 컨트롤. 라이트 · 다
 4. 이제 잠근 앱을 Dock · Finder · Spotlight · 터미널(`open -a`) 어디서 열든, 앱이 화면에 나타나기 전에 화면이 흐려지고
    비밀번호 카드가 뜹니다. 맞으면 앱이 그대로 이어서 열리고, **취소** 하거나 5번 틀리면 앱이 닫힙니다.
    한 번 풀어 둔 앱은 **완전히 종료할 때까지** 다시 묻지 않습니다.
-5. 창을 닫아도 LockApps는 메뉴 막대(🔒)에 남아서 계속 지킵니다. 메뉴 막대 아이콘에서 창 열기 · 보호 켜기/끄기 · 종료.
-   보호 중에 ⌘Q로 종료하려고 하면 한 번 더 물어봅니다.
+5. 창을 닫으면 Dock에서 사라지고 **메뉴 막대(🔒)** 에만 남아 계속 지킵니다. 아이콘 메뉴에서 창 열기 · 보호 켜기/끄기 · 종료.
+   보호 중에 ⌘Q를 누르면 "창만 닫기 / 보호 끄고 종료 / 취소"를 물어봅니다. 적용할 때 켜지는 **백그라운드 실행**(launchd 에이전트)
+   덕분에 강제 종료 · 크래시 · `kill` 로 꺼져도 몇 초 안에 다시 실행되고, 로그인하면 창 없이 조용히 시작합니다.
+   잠금을 정말 멈추려면 **보호 끄기** 를 누르세요.
 
 ## 어떻게 동작하나
 
@@ -51,6 +53,11 @@ macOS 26에서는 진짜 Liquid Glass(`glassEffect`) 컨트롤. 라이트 · 다
 - **막기**: 앱이 **막 실행되는 중**이면 첫 창을 그리기 전에 `SIGSTOP`으로 얼려 두고, 비밀번호가 맞으면 `SIGCONT`로 이어서 실행,
   취소하면 `SIGKILL`. 이미 **실행 중인 앱**(Dock에서 다시 눌렀거나, 켜 둔 채로 잠근 경우)은 숨기고(`hide`) 0.25초마다 다시 숨기다가
   맞으면 다시 보이게 하고(`unhide` + 활성화), 취소하면 종료합니다. 보호를 끄거나 LockApps가 종료될 때는 잡아 둔 앱을 모두 풀어 줍니다.
+- **백그라운드**: 앱 안의 `Contents/Library/LaunchAgents/com.geonhee.lockapps.agent.plist` 를 `SMAppService.agent` 로 등록합니다
+  (`RunAtLoad` + `KeepAlive.SuccessfulExit = false`, `ThrottleInterval` 2초). 로그인 때 launchd가 띄우고, 시그널로 죽거나 0이 아닌 코드로
+  끝나면 다시 띄웁니다. 직접 더블클릭해 연 사본이 있는 채로 launchd 사본이 올라오면 분산 알림으로 **넘겨받고**(이전 사본은 잡고 있던 앱을
+  풀어 주고 종료, 창이 열려 있었으면 새 사본이 다시 엶), 새로 시작한 사본은 `SIGSTOP` 상태로 남아 있는 잠근 앱을 찾아 다시 비밀번호를 묻습니다.
+  로그아웃 · 종료 · 재시동 때의 종료 요청은 대화상자 없이 바로 따릅니다.
 - **비밀번호**: 원문은 저장하지 않고 앱마다 무작위 솔트 + **PBKDF2-HMAC-SHA256 (150,000회)** 해시만
   `~/Library/Application Support/LockApps/locks.json`(0600)에 둡니다. 비교는 상수 시간으로.
   비밀번호를 잊으면 되찾을 방법은 없고, 이 파일을 지우면 모든 잠금이 초기화됩니다.
@@ -59,12 +66,15 @@ macOS 26에서는 진짜 Liquid Glass(`glassEffect`) 컨트롤. 라이트 · 다
 
 ## 알아 둘 것 (한계)
 
-- 같은 사용자 계정의 터미널에서 `kill -CONT` 를 보내거나 LockApps를 강제 종료하면 우회할 수 있어요. 이 앱은 **가족·동료가 무심코 앱을 여는 것**을
-  막는 용도이지, 관리자 권한이 있는 사람을 막는 보안 경계가 아닙니다. 그런 용도는 macOS 사용자 계정 분리 + FileVault가 맞습니다.
+- 같은 사용자 계정의 터미널에서 멈춘 앱에 `kill -CONT` 를 보내거나, `launchctl bootout` 으로 에이전트를 내리거나, 앱 안의 **보호 끄기** 를
+  누르면(마스터 비밀번호 없음) 우회할 수 있어요. 이 앱은 **가족·동료가 무심코 앱을 여는 것**을 막는 용도이지, 관리자 권한이 있는 사람을 막는
+  보안 경계가 아닙니다. 그런 용도는 macOS 사용자 계정 분리 + FileVault가 맞습니다.
 - Finder · Dock · Terminal · loginwindow 같은 앱은 목록에서 빼 두었습니다 (잠그면 세션이 꼬입니다).
 - 앱을 아주 빨리 그리는 일부 앱은 `SIGSTOP` 전에 창이 한 프레임 보일 수 있습니다.
 - 앱을 **끄지 않고** 다른 창으로 갔다 와도 다시 묻지 않습니다(세션 단위 해제). 다시 잠그려면 앱을 종료하세요.
-- 보호를 끄는 것과 LockApps 종료는 비밀번호 없이 됩니다 (앱별 비밀번호만 있고 마스터 비밀번호는 없음).
+- 백그라운드 실행(로그인 항목)을 macOS가 "허용 필요" 상태로 두면 설정 카드에 안내와 "시스템 설정 열기" 버튼이 뜹니다. 허용 전까지는
+  LockApps가 떠 있는 동안만 잠금이 동작합니다.
+- `~/Applications/LockApps.app` 경로를 에이전트가 가리키므로, 앱을 다른 곳으로 옮기면 설정에서 백그라운드 실행을 껐다 켜세요.
 
 ## 빌드
 
@@ -78,7 +88,7 @@ Xcode 없이 Command Line Tools만 있으면 됩니다 (macOS 14+, Swift 5.9+).
 
 `build.sh` 는 `swiftc` 로 소스를 통째로 컴파일한 뒤 `.app` 번들을 조립하고 서명합니다. 키체인에 코드 서명 인증서가 있으면
 (`LOCKAPPS_SIGN_IDENTITY`, 기본값 `Omni Dev Signing`) 그걸로, 없으면 ad-hoc 서명합니다. 릴리즈 빌드는 **`~/Applications/LockApps.app`** 에
-설치하고(`LOCKAPPS_INSTALL_DIR` 로 변경) 로그인 항목은 그 사본을 가리킵니다. 첫 빌드는 SDK 모듈 캐시(`build/ModuleCache`)를 만드느라
+설치하고(`LOCKAPPS_INSTALL_DIR` 로 변경) 백그라운드 에이전트는 그 사본을 가리킵니다. 첫 빌드는 SDK 모듈 캐시(`build/ModuleCache`)를 만드느라
 1~2분 걸리고, 그 다음부터는 수 초면 끝납니다. 아이콘(`AppIcon.icns`)은 `Scripts/make-icon.swift` 가 SF Symbol로 그려 냅니다.
 Command Line Tools에 오래된 `module.modulemap` 이 남아 있어 `redefinition of module 'SwiftBridging'` 이 나는 Mac은
 `Scripts/toolchain-fix` 의 VFS 오버레이로 자동 우회합니다.
@@ -103,6 +113,8 @@ Command Line Tools에 오래된 `module.modulemap` 이 남아 있어 `redefiniti
 | `LOCKAPPS_SNAPSHOT=/path.png` · `LOCKAPPS_SNAPSHOT_PROMPT=/path.png` | 잠시 뒤 메인 창 · 잠금 해제 카드를 PNG로 저장하고 종료 (`LOCKAPPS_SNAPSHOT_EXIT=0` 이면 안 끔) |
 | `LOCKAPPS_SNAPSHOT_DELAY=3` | 스냅샷까지 기다리는 초 (기본 2.5) |
 | `LOCKAPPS_WINDOW_SIZE=620x760` | 메인 창 크기 |
+| `LOCKAPPS_AGENT=1` | launchd 에이전트가 설정하는 값: 창 없이 메뉴 막대에서 시작하고, 직접 실행한 사본이 있으면 넘겨받음 |
+| `LockApps --agent status\|register\|unregister` | 설치된 앱 번들 안의 실행 파일로 호출해 launchd 에이전트 상태를 보거나 등록/해제 |
 
 스냅샷은 창을 오프스크린으로 그려서(`cacheDisplay`) 저장하므로 화면 기록 권한이 필요 없습니다. 대신 뒷창 블러와 Liquid Glass는
 그렇게 그려지지 않아서, 스냅샷 실행(`LOCKAPPS_FLAT_GLASS=1` 과 같음)에서는 그려 넣은 배경화면 위에 반투명 면으로 대신합니다 —
@@ -120,13 +132,13 @@ sleep 3; open -a Calculator          # 멈췄다가(ps 상태 T) 1초 뒤 비밀
 
 ```
 Sources/LockApps
-├── App/        진입점(LockAppsMain), AppDelegate(창 · 메뉴 막대 · 로그인 항목 감지 · 디버그 플래그), 메인 메뉴, UIState
+├── App/        진입점(LockAppsMain, --agent CLI), AppDelegate(창 · 메뉴 막대 · 단일 실행/넘겨받기 · 종료 흐름 · 디버그 플래그), 메인 메뉴, UIState
 ├── Apps/       InstalledApp 모델, AppScanner(앱 폴더 스캔), AppIconCache
 ├── Lock/       LockStore(locks.json), PasswordHasher(PBKDF2), LockEngine(감시 · SIGSTOP/hide · 큐), UnlockPromptWindow(NSPanel)
-├── Support/    AppSettings(외관 · 보호 · SMAppService 로그인 항목), WindowSnapshot(오프스크린 렌더)
+├── Support/    AppSettings(외관 · 보호 · SMAppService 백그라운드 에이전트), WindowSnapshot(오프스크린 렌더)
 └── UI/         RootView(헤더 · 검색 · 목록 · 하단 바 · 오버레이), AppRow, PasswordSheet, SettingsSheet, UnlockPromptView, Theme, Glass
 Scripts/        make-icon.swift(아이콘), screenshots.sh(README 스크린샷), toolchain-fix(CLT 우회)
-Resources/      Info.plist
+Resources/      Info.plist, com.geonhee.lockapps.agent.plist (launchd 에이전트 정의)
 ```
 
 ## 라이선스

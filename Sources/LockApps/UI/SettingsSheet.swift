@@ -58,15 +58,15 @@ struct SettingsSheet: View {
                 }
             }
 
-            section("시작") {
+            section("백그라운드") {
                 VStack(alignment: .leading, spacing: 8) {
                     Button {
-                        settings.setLaunchAtLogin(!settings.launchAtLogin)
+                        ProtectionActions.setBackgroundAgent(!settings.launchAtLogin, settings: settings, ui: ui)
                     } label: {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("로그인 시 자동 실행").font(.system(size: 13, weight: .medium))
-                                Text("켜 두어야 Mac을 다시 켠 뒤에도 잠금이 동작해요. 적용을 누르면 자동으로 켜집니다.")
+                                Text("로그인 시 자동 실행 · 꺼져도 다시 실행").font(.system(size: 13, weight: .medium))
+                                Text("launchd가 LockApps를 지켜봅니다. 로그인하면 자동으로 시작하고, 강제 종료되거나 멈춰도 몇 초 안에 다시 실행돼요. 적용을 누르면 자동으로 켜집니다.")
                                     .font(.system(size: 11)).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -76,6 +76,15 @@ struct SettingsSheet: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    if settings.launchAtLoginNeedsApproval {
+                        HStack(spacing: 8) {
+                            Text("시스템 설정에서 LockApps의 백그라운드 실행을 허용해야 해요.")
+                                .font(.system(size: 11)).foregroundStyle(.orange)
+                            Spacer()
+                            Button("시스템 설정 열기") { settings.openLoginItemsSettings() }
+                                .controlSize(.small)
+                        }
+                    }
                     if let err = settings.launchAtLoginError {
                         Text(err).font(.system(size: 11)).foregroundStyle(.red)
                     }
@@ -87,6 +96,7 @@ struct SettingsSheet: View {
                     row("보호 상태", settings.protectionEnabled ? "켜짐" : "꺼짐")
                     row("잠근 앱", "\(store.count)개")
                     row("다시 잠기는 때", "앱을 완전히 종료한 뒤")
+                    row("창을 닫으면", "Dock에서 사라지고 메뉴 막대에서 계속")
                     HStack {
                         Text("비밀번호 저장").font(.system(size: 12.5)).foregroundStyle(.secondary)
                         Spacer()

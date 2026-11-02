@@ -87,6 +87,11 @@ final class LockEngine {
                 for app in fresh { self.appAppeared(app) }
             }
         }
+        // A previous copy may have been killed while holding apps (they stay SIGSTOPped): adopt them and ask again.
+        for app in NSWorkspace.shared.runningApplications where isLocked(app) && ProcessState.isStopped(app.processIdentifier) {
+            NSLog("LockApps: adopting stopped \(app.bundleIdentifier ?? "?") pid \(app.processIdentifier)")
+            hold(app, mode: .stopped)
+        }
         NSLog("LockApps: engine started (\(store.count) locks)")
     }
 
@@ -261,5 +266,16 @@ final class LockEngine {
                         })
             return
         }
+    }
+}
+
+enum ProcessState {
+    /// True when the process is in the stopped state (SIGSTOP), via sysctl KERN_PROC_PID.
+    static func isStopped(_ pid: pid_t) -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return false }
+        return Int32(info.kp_proc.p_stat) == 4 /* SSTOP */
     }
 }
